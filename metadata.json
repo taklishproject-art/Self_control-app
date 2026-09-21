@@ -1,0 +1,6 @@
+{
+  "name": "SafeGuard - Content Blocker",
+  "description": "የአዋቂዎች ይዘት እና ጎጂ ድረ-ገጾችን የሚከለክል የግል ጥበቃ መተግበሪያ",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

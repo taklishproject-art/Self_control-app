@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">SafeGuard</string>
+    <string name="accessibility_service_label">SafeGuard የይዘት መቆጣጠሪያ</string>
+    <string name="accessibility_service_description">ተገቢ ያልሆኑ እና የአዋቂዎች ይዘቶችን በስልክዎ፣ በብሮውዘሮች (Chrome, Phoenix) እና በማህበራዊ ሚዲያዎች (TikTok, Instagram ወዘተ) ላይ በራስ-ሰር ፈልጎ ለማገድ የሚያስችል ጥበቃ።</string>
+</resources>
