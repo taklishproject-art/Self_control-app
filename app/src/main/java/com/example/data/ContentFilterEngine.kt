@@ -27,14 +27,19 @@ object ContentFilterEngine {
 
     // Known Social Media packages
     val SOCIAL_PACKAGES = setOf(
-        "com.zhiliaoapp.musically",       // TikTok
-        "com.ss.android.ugc.trill",        // TikTok Lite
-        "com.instagram.android",          // Instagram
-        "com.facebook.katana",            // Facebook
-        "com.facebook.lite",              // Facebook Lite
-        "com.twitter.android",            // X / Twitter
-        "com.reddit.frontpage",           // Reddit
-        "com.snapchat.android"            // Snapchat
+        "com.zhiliaoapp.musically",          // TikTok
+        "com.ss.android.ugc.trill",           // TikTok Lite
+        "com.instagram.android",             // Instagram
+        "com.facebook.katana",               // Facebook
+        "com.facebook.lite",                 // Facebook Lite
+        "com.google.android.youtube",        // YouTube
+        "com.google.android.apps.youtube.mango", // YouTube Go
+        "com.twitter.android",               // X / Twitter
+        "com.reddit.frontpage",              // Reddit
+        "com.snapchat.android",              // Snapchat
+        "org.telegram.messenger",            // Telegram
+        "org.thunderdog.challegram",         // Telegram X
+        "com.pinterest"                      // Pinterest
     )
 
     // Known VPN / Tunnel Bypass packages
@@ -102,8 +107,11 @@ object ContentFilterEngine {
             packageName.contains("musically") || packageName.contains("tiktok") -> "TikTok"
             packageName.contains("instagram") -> "Instagram"
             packageName.contains("facebook") -> "Facebook"
+            packageName.contains("youtube") -> "YouTube"
+            packageName.contains("telegram") || packageName.contains("challegram") -> "Telegram"
             packageName.contains("twitter") -> "X (Twitter)"
             packageName.contains("reddit") -> "Reddit"
+            packageName.contains("snapchat") -> "Snapchat"
             packageName.contains("firefox") -> "Firefox"
             packageName.contains("opera") -> "Opera"
             packageName.contains("sbrowser") -> "Samsung Internet"
@@ -187,9 +195,11 @@ object ContentFilterEngine {
             }
         }
 
-        // 2. Check adult domains (exact or substring in URLs or search queries)
+        // 2. Check adult domains (require whole token / host match or surrounded by punctuation/slashes)
         for (domain in ADULT_DOMAINS) {
-            if (normalized.contains(domain) || decodedCandidates.contains(domain)) {
+            // Check if domain is part of URL or a standalone word (not a prefix of a word like 'portugal' if domain is 'pornhub')
+            val domainRegex = Regex("(?:^|[^a-zA-Z0-9])${Regex.escape(domain)}(?:$|[^a-zA-Z0-9])")
+            if (domainRegex.containsMatchIn(normalized) || domainRegex.containsMatchIn(decodedCandidates)) {
                 return FilterMatch(
                     matchedTerm = domain,
                     category = "የአዋቂዎች ድረ-ገጽ (Adult Website)",
@@ -198,41 +208,41 @@ object ContentFilterEngine {
             }
         }
 
-        // 3. Check explicit adult keywords across raw, split, and decoded texts
-        val words = normalized.split(Regex("[\\s,;:.\\-_/?&=#+]+")).toSet()
+        // 3. Check explicit adult keywords with strict word-boundary matching
+        // Tokenize text by all non-alphanumeric separators
+        val tokens = normalized.split(Regex("[^a-zA-Z0-9]+")).filter { it.isNotBlank() }.toSet()
+        val decodedTokens = decodedCandidates.split(Regex("[^a-zA-Z0-9]+")).filter { it.isNotBlank() }.toSet()
 
         for (kw in ADULT_KEYWORDS) {
-            if (kw.length <= 4) {
-                // Strict word boundary match to avoid false positives (e.g. "sussex", "sextant")
-                if (words.contains(kw) ||
-                    normalized.contains(" $kw ") ||
-                    normalized.startsWith("$kw ") ||
-                    normalized.endsWith(" $kw") ||
-                    normalized == kw ||
-                    decodedCandidates.split(" ").contains(kw)
-                ) {
-                    return FilterMatch(
-                        matchedTerm = kw,
-                        category = "ተገቢ ያልሆነ ቃል (Explicit Keyword)",
-                        reasonAmharic = "ተገቢ ያልሆነ የአዋቂ ይዘት ቃል በመገኘቱ ታግዷል"
-                    )
-                }
-            } else {
-                if (normalized.contains(kw) || decodedCandidates.contains(kw)) {
+            // Multi-word keywords (e.g. "naked girl", "sex video") vs single word (e.g. "porn", "hentai", "nude")
+            if (kw.contains(" ")) {
+                val kwRegex = Regex("(?:^|[^a-zA-Z0-9])${Regex.escape(kw)}(?:$|[^a-zA-Z0-9])")
+                if (kwRegex.containsMatchIn(normalized) || kwRegex.containsMatchIn(decodedCandidates)) {
                     return FilterMatch(
                         matchedTerm = kw,
                         category = "ተገቢ ያልሆነ ይዘት (Explicit Content)",
                         reasonAmharic = "ተገቢ ያልሆነ የአዋቂ ይዘት ቃል በመገኘቱ ታግዷል"
                     )
                 }
+            } else {
+                // Single word keywords MUST match complete individual word tokens
+                // This prevents prefixes like "por" from triggering "porn", or "por" matching "portugal"
+                if (tokens.contains(kw) || decodedTokens.contains(kw)) {
+                    return FilterMatch(
+                        matchedTerm = kw,
+                        category = "ተገቢ ያልሆነ ቃል (Explicit Keyword)",
+                        reasonAmharic = "ተገቢ ያልሆነ የአዋቂ ይዘት ቃል በመገኘቱ ታግዷል"
+                    )
+                }
             }
         }
 
-        // ENGINE 3 Check: In Midnight Vulnerability Window, trigger on soft/provocative terms
+        // ENGINE 3 Check: In Midnight Vulnerability Window, trigger on soft/provocative terms with word boundary
         if (isMidnightVulnerabilityWindow()) {
             val midnightSensitiveTerms = listOf("sexy", "hot girl", "dating 18", "escort", "erotic", "nude", "bikini dance")
             for (term in midnightSensitiveTerms) {
-                if (normalized.contains(term) || decodedCandidates.contains(term)) {
+                val termRegex = Regex("(?:^|[^a-zA-Z0-9])${Regex.escape(term)}(?:$|[^a-zA-Z0-9])")
+                if (termRegex.containsMatchIn(normalized) || termRegex.containsMatchIn(decodedCandidates)) {
                     return FilterMatch(
                         matchedTerm = term,
                         category = "የሌሊት ንቃት ጋሻ (Midnight Vulnerability Guard)",

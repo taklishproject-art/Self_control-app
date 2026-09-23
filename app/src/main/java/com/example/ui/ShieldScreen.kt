@@ -142,6 +142,10 @@ fun ShieldScreen() {
     var testQueryText by remember { mutableStateOf("") }
     var liveAlertMessage by remember { mutableStateOf<String?>(null) }
 
+    var isAppUnlocked by remember { mutableStateOf(prefs.pinCode.isNullOrEmpty()) }
+    var enteredAppPin by remember { mutableStateOf("") }
+    var appUnlockError by remember { mutableStateOf<String?>(null) }
+
     // Periodic check for accessibility status
     LaunchedEffect(Unit) {
         while (true) {
@@ -173,6 +177,123 @@ fun ShieldScreen() {
         onDispose {
             context.unregisterReceiver(receiver)
         }
+    }
+
+    // If a PIN is configured and the app is locked, present an impassable lock screen
+    if (!prefs.pinCode.isNullOrEmpty() && !isAppUnlocked) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Slate950)
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = Slate900),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, ShieldAlertRed.copy(alpha = 0.4f), RoundedCornerShape(24.dp))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(72.dp)
+                            .clip(CircleShape)
+                            .background(ShieldAlertRed.copy(alpha = 0.15f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "የተቆለፈ",
+                            tint = ShieldAlertRed,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = "SafeGuard ተቆልፏል",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = "ከባለቤቱ ውጭ ማንም እንዳያይ ወይም እንዳያጠፋው በምስጢር ቁልፍ ተጠብቋል፦",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    OutlinedTextField(
+                        value = enteredAppPin,
+                        onValueChange = {
+                            if (it.length <= 12) {
+                                enteredAppPin = it
+                                appUnlockError = null
+                            }
+                        },
+                        placeholder = { Text("ባለ 4-12 አሃዝ የይለፍ ቃል") },
+                        singleLine = true,
+                        isError = appUnlockError != null,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = KeyboardType.NumberPassword,
+                            imeAction = ImeAction.Done
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("app_lock_pin_input")
+                    )
+
+                    appUnlockError?.let { err ->
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = err,
+                            color = ShieldAlertRed,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Button(
+                        onClick = {
+                            if (enteredAppPin == prefs.pinCode) {
+                                isAppUnlocked = true
+                                appUnlockError = null
+                                enteredAppPin = ""
+                            } else {
+                                appUnlockError = "የተሳሳተ የይለፍ ቃል! መተግበሪያውን መክፈት አይቻልም።"
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = ShieldGreenPrimary),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
+                            .testTag("app_unlock_button")
+                    ) {
+                        Icon(Icons.Default.LockOpen, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("መተግበሪያውን ክፈት (Unlock)", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+        return
     }
 
     Scaffold(
@@ -299,14 +420,6 @@ fun ShieldScreen() {
                     totalBlocks = totalBlocks,
                     todayBlocks = todayBlocks,
                     streakDays = streakDays,
-                    onTestScriptureScreen = {
-                        val intent = Intent(context, SoberingBlockActivity::class.java).apply {
-                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                            putExtra(SoberingBlockActivity.EXTRA_APP_NAME, "Google Chrome")
-                            putExtra(SoberingBlockActivity.EXTRA_BLOCKED_TERM, "xn..")
-                        }
-                        context.startActivity(intent)
-                    },
                     onToggleProtection = { requestedState ->
                         if (isUnbreakableMode && !requestedState) {
                             // Cannot turn off in unbreakable mode!
@@ -404,6 +517,7 @@ fun ShieldScreen() {
             currentPin = prefs.pinCode,
             onSave = { newPin ->
                 prefs.pinCode = newPin
+                isAppUnlocked = true
                 showSetPinDialog = false
             },
             onDismiss = { showSetPinDialog = false }
@@ -432,7 +546,6 @@ private fun ProtectionTab(
     totalBlocks: Int,
     todayBlocks: Int,
     streakDays: Int,
-    onTestScriptureScreen: () -> Unit,
     onToggleProtection: (Boolean) -> Unit,
     onOpenAccessibilitySettings: () -> Unit
 ) {
@@ -575,113 +688,6 @@ private fun ProtectionTab(
                 }
             }
         }
-
-        // Scripture Sobering Shield Feature Card
-        item {
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1B18)),
-                border = CardDefaults.outlinedCardBorder().copy(
-                    brush = Brush.horizontalGradient(listOf(Color(0xFFF59E0B), Color(0xFFD97706)))
-                ),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.MenuBook,
-                            contentDescription = null,
-                            tint = Color(0xFFF59E0B),
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = "የመጽሐፍ ቅዱስ አስደንጋጭ ማስታወሻ",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFF59E0B)
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "በ Chrome፣ Phoenix ወይም በየትኛውም ቦታ «xn..» ወይም የአዋቂ ቃል ሲፈለግ፣ ገጹ ወዲያውኑ ተዘግቶ በደማቅ የመጽሐፍ ቅዱስ ጥቅስ እና ስሜትን በሚያቀዘቅዝ ማስታወሻ ይሸፈናል።",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFFE2E8F0)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedButton(
-                        onClick = onTestScriptureScreen,
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("ስክሪኑን አሁኑኑ ሞክር (Preview Warning Screen)", color = Color(0xFFF59E0B), fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
-
-        // Night Sanctuary & Morning Prayer Gate System Card (Background System)
-        item {
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF0C1322)),
-                border = CardDefaults.outlinedCardBorder().copy(
-                    brush = Brush.horizontalGradient(listOf(Color(0xFF38BDF8), Color(0xFF6366F1)))
-                ),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.Bedtime,
-                            contentDescription = null,
-                            tint = Color(0xFF38BDF8),
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = "የሳተላይት/ኔትወርክ ሰዓት የሌሊት ጽሞና እና የማለዳ ጸሎት በር",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF38BDF8)
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "ይህ ስርዓት በስልኩ ሰዓት ላይ ሳይመሰረት በትክክለኛው የኢትዮጵያ ሰዓት (UTC+3) ከጀርባ ይሰራል፦\n• 4:55 — የማረፊያ ቅድመ-ዝግጅት ማስጠንቀቂያ ይሰጣል\n• 5:00 — ስልኩን ሙሉ በሙሉ በመቆለፍ ወደ ሌሊት ጽሞና ያስገባል\n• 11:00 — የማለዳ ጸሎትና ስፖርት ሳያደርጉ ስልኩ አይከፈትም",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFFE2E8F0),
-                        lineHeight = 20.sp
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Color.Black.copy(alpha = 0.4f))
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.Lock,
-                            contentDescription = null,
-                            tint = Color(0xFF38BDF8),
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "ከጀርባ በቋሚነት የበራ (Locked ON) — ማጥፋት አይቻልም",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color(0xFF38BDF8),
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
-        }
-
 
         // Accessibility Permission Setup Card (Prominent if not enabled)
         item {
@@ -957,12 +963,12 @@ private fun RulesTab(
                     Spacer(modifier = Modifier.width(16.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "ማህበራዊ ሚዲያዎች (TikTok, Instagram...)",
+                            text = "ማህበራዊ ሚዲያዎች እና አፖች (TikTok, Facebook, YouTube...)",
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = "በ TikTok (For You page)፣ Instagram Reels፣ Facebook ላይ ተገቢ ያልሆኑ ቪዲዮዎችን እና ጽሁፎችን ይዘጋል።",
+                            text = "በ TikTok፣ Facebook፣ YouTube፣ Chrome ወይም በየትኛውም አፕ ላይ የአዋቂ ቃል በፍለጋ ሳጥን ሲተየብ ቃሉ ወዲያውኑ ይሰረዛል፤ አፑ ተዘግቶ ወደ Home ይመልሳል።",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1360,7 +1366,7 @@ private fun SimulatorTab(
             value = testQueryText,
             onValueChange = onQueryChange,
             label = { Text("የሚፈተሸውን ቃል ወይም ድረ-ገጽ እዚህ ያስገቡ") },
-            placeholder = { Text("ለምሳሌ፦ xn, adult, porn, xxx") },
+            placeholder = { Text("ለምሳሌ፦ Portugal, porn, xvideos, football") },
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("test_query_input"),
@@ -1371,6 +1377,22 @@ private fun SimulatorTab(
             ),
             singleLine = true
         )
+
+        // Sample quick test buttons
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            for (sample in listOf("Portugal", "football", "porn", "xvideos")) {
+                Button(
+                    onClick = { onQueryChange(sample) },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.outlinedButtonColors()
+                ) {
+                    Text(sample)
+                }
+            }
+        }
 
         // Result Card
         if (testQueryText.isNotBlank()) {
@@ -1528,11 +1550,11 @@ private fun PinVerificationDialog(
         title = { Text("የደህንነት ቁልፍ (PIN) ያስገቡ") },
         text = {
             Column {
-                Text("ጥበቃውን ለማጥፋት ቀደም ሲል ያስቀመጡትን ባለ 4 አሃዝ የይለፍ ቃል ያስገቡ፦")
+                Text("ማስተካከያ ለማድረግ ቀደም ሲል ያስቀመጡትን የምስጢር ቁልፍ ያስገቡ፦")
                 Spacer(modifier = Modifier.height(12.dp))
                 OutlinedTextField(
                     value = enteredPin,
-                    onValueChange = { if (it.length <= 6) enteredPin = it },
+                    onValueChange = { if (it.length <= 12) enteredPin = it },
                     singleLine = true,
                     isError = errorMsg != null,
                     visualTransformation = PasswordVisualTransformation(),
@@ -1575,20 +1597,45 @@ private fun SetPinDialog(
     onDismiss: () -> Unit
 ) {
     var newPin by remember { mutableStateOf("") }
+    var confirmPin by remember { mutableStateOf("") }
+    var errorText by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (currentPin.isNullOrEmpty()) "የራስ-መቆጣጠሪያ ቁልፍ (PIN) ያዘጋጁ" else "የደህንነት ቁልፍ አስተዳድር") },
+        title = { Text(if (currentPin.isNullOrEmpty()) "ጠንካራ የይለፍ ቃል (Strong PIN) ያዘጋጁ" else "የደህንነት ቁልፍ አስተዳድር") },
         text = {
             Column {
                 Text(
-                    text = "በድካም ወቅት ጥበቃውን በቀላሉ እንዳያጠፉት ለመከላከል ባለ 4 አሃዝ የይለፍ ቃል ያስቀምጡ።"
+                    text = "ከባለቤቱ ውጭ ማንም አፑን እንዳይከፍት እና ጥበቃውን እንዳያጠፋው ጠንካራ ባለ 4-12 አሃዝ የምስጢር ቁልፍ ያስቀምጡ።"
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 OutlinedTextField(
                     value = newPin,
-                    onValueChange = { if (it.length <= 6) newPin = it },
-                    placeholder = { Text("ለምሳሌ፦ 1234") },
+                    onValueChange = {
+                        if (it.length <= 12) {
+                            newPin = it
+                            errorText = null
+                        }
+                    },
+                    placeholder = { Text("አዲስ የይለፍ ቃል (4-12 አሃዝ)") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = KeyboardType.NumberPassword,
+                        imeAction = ImeAction.Next
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = confirmPin,
+                    onValueChange = {
+                        if (it.length <= 12) {
+                            confirmPin = it
+                            errorText = null
+                        }
+                    },
+                    placeholder = { Text("የይለፍ ቃሉን በድጋሚ ያረጋግጡ") },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
@@ -1597,16 +1644,24 @@ private fun SetPinDialog(
                     ),
                     modifier = Modifier.fillMaxWidth()
                 )
+                errorText?.let { err ->
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    if (newPin.length >= 4) {
+                    if (newPin.length < 4) {
+                        errorText = "የይለፍ ቃሉ ቢያንስ 4 አሃዞች ሊኖሩት ይገባል!"
+                    } else if (newPin != confirmPin) {
+                        errorText = "የተረጋገጠው የይለፍ ቃል አይመሳሰልም!"
+                    } else {
                         onSave(newPin)
                     }
                 },
-                enabled = newPin.length >= 4
+                enabled = newPin.length >= 4 && confirmPin.length >= 4
             ) {
                 Text("አስቀምጥ")
             }

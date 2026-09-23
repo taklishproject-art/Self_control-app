@@ -1,6 +1,8 @@
 package com.example.ui
 
 import android.content.Intent
+import android.media.Ringtone
+import android.media.RingtoneManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -75,15 +77,29 @@ import kotlinx.coroutines.delay
 
 class SanctuaryLockActivity : ComponentActivity() {
 
+    private var alarmRingtone: Ringtone? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val mode = intent.getStringExtra(EXTRA_MODE) ?: MODE_NIGHT_LOCK
+
+        if (mode == MODE_MORNING_GATE) {
+            try {
+                val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                alarmRingtone = RingtoneManager.getRingtone(applicationContext, alarmUri)
+                alarmRingtone?.play()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
 
         setContent {
             val prefs = remember { BlockPreferences(applicationContext) }
             SanctuaryLockScreen(
                 mode = mode,
                 onMorningCompleted = {
+                    alarmRingtone?.stop()
                     prefs.markMorningSanctuaryCompletedToday()
                     val homeIntent = Intent(Intent.ACTION_MAIN).apply {
                         addCategory(Intent.CATEGORY_HOME)
@@ -93,6 +109,7 @@ class SanctuaryLockActivity : ComponentActivity() {
                     finish()
                 },
                 onExitToHome = {
+                    alarmRingtone?.stop()
                     val homeIntent = Intent(Intent.ACTION_MAIN).apply {
                         addCategory(Intent.CATEGORY_HOME)
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -102,6 +119,11 @@ class SanctuaryLockActivity : ComponentActivity() {
                 }
             )
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        alarmRingtone?.stop()
     }
 
     override fun onBackPressed() {

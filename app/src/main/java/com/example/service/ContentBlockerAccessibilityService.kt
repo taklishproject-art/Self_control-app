@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.VibrationEffect
@@ -20,9 +21,13 @@ import com.example.ui.SoberingBlockActivity
 class ContentBlockerAccessibilityService : AccessibilityService() {
 
     private lateinit var prefs: BlockPreferences
+    private var smartDisplayController: SmartDisplayController? = null
+    private var gestureNavigationEngine: ModernGestureNavigationEngine? = null
+    private var superSystemEngine: SuperSystemBackgroundEngine? = null
     private val handler = Handler(Looper.getMainLooper())
     private var lastBlockTimestamp = 0L
     private var lastSanctuaryCheckTimestamp = 0L
+    private var lastDisplayEvaluationTimestamp = 0L
     private val DEBOUNCE_MS = 1500L // Prevent duplicate rapid blocks for the same screen
 
     companion object {
@@ -36,11 +41,24 @@ class ContentBlockerAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         prefs = BlockPreferences(applicationContext)
+        smartDisplayController = SmartDisplayController(applicationContext)
+        gestureNavigationEngine = ModernGestureNavigationEngine(this).apply {
+            start()
+        }
+        superSystemEngine = SuperSystemBackgroundEngine(this).apply {
+            start()
+        }
         isServiceRunning = true
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        smartDisplayController?.removeOverlay()
+        smartDisplayController = null
+        gestureNavigationEngine?.stop()
+        gestureNavigationEngine = null
+        superSystemEngine?.stop()
+        superSystemEngine = null
         isServiceRunning = false
     }
 
@@ -49,11 +67,32 @@ class ContentBlockerAccessibilityService : AccessibilityService() {
         if (!::prefs.isInitialized) {
             prefs = BlockPreferences(applicationContext)
         }
+        if (smartDisplayController == null) {
+            smartDisplayController = SmartDisplayController(applicationContext)
+        }
+        if (gestureNavigationEngine == null) {
+            gestureNavigationEngine = ModernGestureNavigationEngine(this).apply {
+                start()
+            }
+        }
+        if (superSystemEngine == null) {
+            superSystemEngine = SuperSystemBackgroundEngine(this).apply {
+                start()
+            }
+        }
 
         // Check if master protection is enabled
         if (!prefs.isProtectionEnabled) return
 
         val packageName = event.packageName?.toString() ?: return
+
+        // 0. Background Display Optimization (Samsung-style Smart Light & Force Dark Layer)
+        // Evaluates every 4 seconds or on window changes completely in background
+        val nowTime = System.currentTimeMillis()
+        if (nowTime - lastDisplayEvaluationTimestamp > 4000L || event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            lastDisplayEvaluationTimestamp = nowTime
+            smartDisplayController?.evaluateAndApplyDisplayAdjustments(packageName)
+        }
 
         // Handle System Settings Tampering Protection (Anti-Uninstall / Anti-Deactivate)
         if (packageName.contains("settings") || packageName.contains("packageinstaller")) {
@@ -84,16 +123,19 @@ class ContentBlockerAccessibilityService : AccessibilityService() {
         // Skip our own app package to allow settings configuration
         if (packageName == applicationContext.packageName) return
 
-        // SANCTUARY ENGINE: Night Grace Warning (4:55), Night Lockdown (5:00 - 11:00), Morning Gate
+        // SANCTUARY ENGINE: Night Grace Warning (4:55), Night Shutdown Lock (5:00 - 11:00), Morning Gate (11:00), Focus Restriction until 3:45 AM
         val now = System.currentTimeMillis()
-        if (now - lastSanctuaryCheckTimestamp > 5000L) {
+        if (now - lastSanctuaryCheckTimestamp > 3000L) {
             lastSanctuaryCheckTimestamp = now
             val morningCompleted = prefs.isMorningSanctuaryCompletedToday()
             val phase = SanctuaryEngine.getCurrentPhase(morningCompleted)
 
             when (phase) {
-                SanctuaryEngine.SanctuaryPhase.NIGHT_LOCKDOWN -> {
-                    // Instantly lock screen and show Night Sanctuary
+                SanctuaryEngine.SanctuaryPhase.NIGHT_SHUTDOWN_LOCK -> {
+                    // Instantly lock screen / kick home and show Night Sanctuary
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                        performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+                    }
                     performGlobalAction(GLOBAL_ACTION_HOME)
                     val lockIntent = Intent(applicationContext, SanctuaryLockActivity::class.java).apply {
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -103,28 +145,41 @@ class ContentBlockerAccessibilityService : AccessibilityService() {
                     return
                 }
                 SanctuaryEngine.SanctuaryPhase.MORNING_GATE -> {
-                    // Block access to browsers/social until morning prayer & fitness completed
-                    if (ContentFilterEngine.isMonitoredPackage(packageName, prefs.blockBrowsers, prefs.blockSocial)) {
+                    // Launch morning alarm gate with prayer & exercise checklist
+                    performGlobalAction(GLOBAL_ACTION_HOME)
+                    val gateIntent = Intent(applicationContext, SanctuaryLockActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        putExtra(SanctuaryLockActivity.EXTRA_MODE, SanctuaryLockActivity.MODE_MORNING_GATE)
+                    }
+                    startActivity(gateIntent)
+                    return
+                }
+                SanctuaryEngine.SanctuaryPhase.FOCUS_RESTRICTED_WINDOW -> {
+                    // Block TikTok, Facebook, Chrome and other browsers/social media until 3:45 AM Ethiopian (9:45 AM standard)
+                    if (ContentFilterEngine.isMonitoredPackage(packageName, blockBrowsers = true, blockSocial = true)) {
                         performGlobalAction(GLOBAL_ACTION_HOME)
-                        val gateIntent = Intent(applicationContext, SanctuaryLockActivity::class.java).apply {
-                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                            putExtra(SanctuaryLockActivity.EXTRA_MODE, SanctuaryLockActivity.MODE_MORNING_GATE)
+                        triggerHapticAlert()
+                        handler.post {
+                            Toast.makeText(
+                                applicationContext,
+                                "🛡️ SafeGuard ጥበቃ፦ ቲክቶክ፣ ፌስቡክ እና ክሮም የሚፈቀዱት ጠዋት 3:45 ሰዓት ሲሆን ብቻ ነው! እስከዚያው በጸሎትና በስራ ላይ በርታ።",
+                                Toast.LENGTH_LONG
+                            ).show()
                         }
-                        startActivity(gateIntent)
                         return
                     }
                 }
                 SanctuaryEngine.SanctuaryPhase.PRE_LOCK_WARNING -> {
-                    // Warn once every minute during the 4:55 to 5:00 window
+                    // Warn once during the 4:55 to 5:00 window
                     handler.post {
                         Toast.makeText(
                             applicationContext,
-                            "🌙 SafeGuard፦ ከ 5:00 ጀምሮ ስልክህ ሙሉ በሙሉ ይቆለፋል! ስልክህን ለእረፍት አዘጋጅ።",
+                            "🌙 SafeGuard፦ ከ 5:00 ጀምሮ ስልክህ ሙሉ በሙሉ ይቆለፋል (Night Shutdown)! ስልክህን ለእረፍት አዘጋጅ።",
                             Toast.LENGTH_LONG
                         ).show()
                     }
                 }
-                SanctuaryEngine.SanctuaryPhase.NORMAL_DAY -> {
+                SanctuaryEngine.SanctuaryPhase.ACTIVE_FULL_ACCESS -> {
                     // Normal filtering continues
                 }
             }
@@ -141,8 +196,8 @@ class ContentBlockerAccessibilityService : AccessibilityService() {
         // Debounce rapid repeated triggers
         if (now - lastBlockTimestamp < DEBOUNCE_MS) return
 
-        // ENGINE 4: Keystroke & Input Buffer Watcher
-        // When typing in text inputs (search boxes, URL fields)
+        // ENGINE 4: Keystroke & Input Watcher
+        // When typing in any search bar or editable field (e.g. TikTok, Facebook, Chrome, YouTube, etc.)
         if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) {
             val typedText = event.text?.joinToString(" ") ?: ""
             if (typedText.isNotBlank()) {
@@ -152,7 +207,9 @@ class ContentBlockerAccessibilityService : AccessibilityService() {
                     strictMode = prefs.isStrictMode
                 )
                 if (match != null) {
-                    triggerBlock(packageName, match.matchedTerm, "በመተየብ ላይ እንዳለ በቅጽበት ታግዷል")
+                    // Instantly wipe keyboard / input text to keep screen clean and undefiled
+                    clearInappropriateSearchInput(event.source, rootInActiveWindow)
+                    triggerBlock(packageName, match.matchedTerm, "በመተየብ ላይ እንዳለ ቃሉ በቅጽበት ተሰርዟል፤ ወደ Home ተመልሷል")
                     return
                 }
             }
@@ -168,6 +225,7 @@ class ContentBlockerAccessibilityService : AccessibilityService() {
                     strictMode = prefs.isStrictMode
                 )
                 if (match != null) {
+                    clearInappropriateSearchInput(event.source, rootInActiveWindow)
                     triggerBlock(packageName, match.matchedTerm, match.reasonAmharic)
                     return
                 }
@@ -184,7 +242,8 @@ class ContentBlockerAccessibilityService : AccessibilityService() {
 
             val matchedTerm = scanNodeTree(rootNode, maxDepth = 6, maxNodes = 60)
             if (matchedTerm != null) {
-                triggerBlock(packageName, matchedTerm, "ተገቢ ያልሆነ ይዘት ታግዷል")
+                clearInappropriateSearchInput(event.source, rootNode)
+                triggerBlock(packageName, matchedTerm, "ተገቢ ያልሆነ ይዘት ታግዷል እና ተሰርዟል")
             }
         } finally {
             rootNode.recycle()
@@ -251,20 +310,26 @@ class ContentBlockerAccessibilityService : AccessibilityService() {
             nodeCount++
 
             try {
-                // Inspect text and content description
-                val text = current.text?.toString()
-                if (!text.isNullOrBlank()) {
-                    val match = ContentFilterEngine.checkContent(text, customKeywords, strictMode)
-                    if (match != null) {
-                        return match.matchedTerm
-                    }
-                }
+                // If the user is actively typing in this node (isEditable and isFocused), skip inspecting it
+                // until they finish typing/search, to avoid closing the app on incomplete prefixes like "por"
+                val isActivelyTyping = current.isEditable && current.isFocused
 
-                val desc = current.contentDescription?.toString()
-                if (!desc.isNullOrBlank()) {
-                    val match = ContentFilterEngine.checkContent(desc, customKeywords, strictMode)
-                    if (match != null) {
-                        return match.matchedTerm
+                if (!isActivelyTyping) {
+                    // Inspect text and content description
+                    val text = current.text?.toString()
+                    if (!text.isNullOrBlank()) {
+                        val match = ContentFilterEngine.checkContent(text, customKeywords, strictMode)
+                        if (match != null) {
+                            return match.matchedTerm
+                        }
+                    }
+
+                    val desc = current.contentDescription?.toString()
+                    if (!desc.isNullOrBlank()) {
+                        val match = ContentFilterEngine.checkContent(desc, customKeywords, strictMode)
+                        if (match != null) {
+                            return match.matchedTerm
+                        }
                     }
                 }
 
@@ -319,10 +384,12 @@ class ContentBlockerAccessibilityService : AccessibilityService() {
 
         var mentionsSafeGuard = false
         var mentionsTamperAction = false
+        var mentionsAccessibilityService = false
 
         val tamperKeywords = listOf(
             "uninstall", "force stop", "disable", "clear data", "clear storage",
-            "deactivate", "remove", "አጥፋ", "አቁም", "ውሂብ አጽዳ", "አስተዳዳሪ አንሳ"
+            "deactivate", "remove", "turn off", "off", "stop", "delete",
+            "አጥፋ", "አቁም", "ውሂብ አጽዳ", "አስተዳዳሪ አንሳ", "አትጠቀም", "ሰርዝ"
         )
 
         while (queue.isNotEmpty() && nodeCount < maxNodes) {
@@ -333,8 +400,11 @@ class ContentBlockerAccessibilityService : AccessibilityService() {
                 val text = (current.text?.toString() ?: "") + " " + (current.contentDescription?.toString() ?: "")
                 val lower = text.lowercase()
 
-                if (lower.contains("safeguard")) {
+                if (lower.contains("safeguard") || lower.contains("የይዘት መቆጣጠሪያ")) {
                     mentionsSafeGuard = true
+                }
+                if (lower.contains("accessibility") || lower.contains("ተደራሽነት") || lower.contains("safe guard")) {
+                    mentionsAccessibilityService = true
                 }
                 for (tk in tamperKeywords) {
                     if (lower.contains(tk)) {
@@ -342,7 +412,8 @@ class ContentBlockerAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                if (mentionsSafeGuard && mentionsTamperAction) return true
+                // If on SafeGuard's App Info or SafeGuard's Accessibility Service page and attempting to disable/uninstall
+                if ((mentionsSafeGuard || mentionsAccessibilityService) && mentionsTamperAction) return true
 
                 if (depth < maxDepth) {
                     for (i in 0 until current.childCount) {
@@ -354,7 +425,70 @@ class ContentBlockerAccessibilityService : AccessibilityService() {
             }
         }
 
-        return mentionsSafeGuard && mentionsTamperAction
+        return (mentionsSafeGuard || mentionsAccessibilityService) && mentionsTamperAction
+    }
+
+    /**
+     * Finds and instantly clears inappropriate search inputs or URL bars across Chrome, Phoenix, TikTok, YouTube, Facebook
+     */
+    private fun clearInappropriateSearchInput(sourceNode: AccessibilityNodeInfo?, rootNode: AccessibilityNodeInfo?) {
+        try {
+            // 1. Try directly on event source if editable
+            if (sourceNode != null && sourceNode.isEditable) {
+                wipeNodeText(sourceNode)
+                return
+            }
+
+            // 2. Search root node for focused or editable nodes to wipe
+            if (rootNode != null) {
+                val focusedNode = rootNode.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                if (focusedNode != null && focusedNode.isEditable) {
+                    wipeNodeText(focusedNode)
+                    focusedNode.recycle()
+                    return
+                }
+
+                // Scan for editable search boxes or clear buttons
+                val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
+                queue.add(Pair(rootNode, 0))
+                var count = 0
+                while (queue.isNotEmpty() && count < 35) {
+                    val (current, depth) = queue.removeFirst()
+                    count++
+
+                    if (current.isEditable) {
+                        wipeNodeText(current)
+                        return
+                    }
+
+                    // Check for "Clear query" or "Clear text" button (X button) in search bars
+                    val desc = current.contentDescription?.toString()?.lowercase() ?: ""
+                    if (current.isClickable && (desc.contains("clear query") || desc.contains("clear text") || desc.contains("delete") || desc.contains("አጥፋ"))) {
+                        current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        return
+                    }
+
+                    if (depth < 4) {
+                        for (i in 0 until current.childCount) {
+                            current.getChild(i)?.let { queue.add(Pair(it, depth + 1)) }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Handle safely
+        }
+    }
+
+    private fun wipeNodeText(node: AccessibilityNodeInfo) {
+        try {
+            val arguments = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+            }
+            node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+        } catch (e: Exception) {
+            // Safely ignore
+        }
     }
 
     private fun triggerBlock(packageName: String, term: String, reason: String) {
